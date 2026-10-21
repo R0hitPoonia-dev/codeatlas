@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codeatlas.dev/schema/ir.v1.schema.json",
+  "title": "CodeAtlas IR v1",
+  "description": "Language-agnostic graph emitted by every analyzer (code, infra). One document = one analyzer run over one repo at one commit.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["irVersion", "source", "nodes", "edges"],
+  "properties": {
+    "irVersion": { "const": "1" },
+    "source": { "$ref": "#/$defs/source" },
+    "nodes": { "type": "array", "items": { "$ref": "#/$defs/node" } },
+    "edges": { "type": "array", "items": { "$ref": "#/$defs/edge" } },
+    "config": {
+      "type": "object",
+      "description": "The repo's own CodeAtlas settings from .codeatlas.yml (diagram groups and renames), passed through to the UI. Set by the infra analyzer only.",
+      "properties": {
+        "groups": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "members"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "members": { "type": "array", "items": { "type": "string" }, "description": "Globs over node ids, qualified names or names, e.g. com.acme.billing.*" }
+            }
+          }
+        },
+        "rename": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Group id -> label; groups given the same label are merged." }
+      }
+    }
+  },
+  "$defs": {
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repo", "commit", "analyzer"],
+      "properties": {
+        "repo": { "type": "string", "minLength": 1, "description": "Repo name as registered in CodeAtlas." },
+        "commit": { "type": "string", "minLength": 1 },
+        "branch": { "type": "string" },
+        "analyzer": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "version"],
+          "properties": {
+            "name": { "type": "string", "minLength": 1, "examples": ["java", "typescript", "infra"] },
+            "version": { "type": "string", "minLength": 1 }
+          }
+        },
+        "generatedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "location": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file"],
+      "properties": {
+        "file": { "type": "string", "minLength": 1, "description": "Path relative to repo root." },
+        "startLine": { "type": "integer", "minimum": 1 },
+        "endLine": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "nodeKind": {
+      "enum": [
+        "service", "module", "package", "file",
+        "class", "interface", "enum", "function", "method", "field",
+        "endpoint", "database", "table", "topic", "queue",
+        "external", "container", "deployment"
+      ]
+    },
+    "edgeKind": {
+      "enum": [
+        "contains", "imports", "depends_on",
+        "calls", "extends", "implements", "references",
+        "handles", "reads", "writes", "publishes", "consumes",
+        "http_calls", "deploys", "connects_to", "runs"
+      ]
+    },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "name"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "description": "Stable across commits (e.g. SCIP symbol). Unique within the document." },
+        "kind": { "$ref": "#/$defs/nodeKind" },
+        "name": { "type": "string", "minLength": 1 },
+        "qualifiedName": { "type": "string" },
+        "parent": { "type": "string", "description": "Id of the enclosing node; implies a 'contains' edge." },
+        "language": { "type": "string" },
+        "location": { "$ref": "#/$defs/location" },
+        "otel": {
+          "type": "object",
+          "description": "OpenTelemetry attribute values that identify this node at runtime (used for span correlation), e.g. {\"http.route\": \"/orders/{id}\", \"http.request.method\": \"GET\"}.",
+          "additionalProperties": { "type": "string" }
+        },
+        "attrs": { "type": "object" }
+      }
+    },
+    "edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "target", "kind"],
+      "properties": {
+        "source": { "type": "string", "minLength": 1 },
+        "target": { "type": "string", "minLength": 1 },
+        "kind": { "$ref": "#/$defs/edgeKind" },
+        "locations": { "type": "array", "items": { "$ref": "#/$defs/location" } },
+        "attrs": { "type": "object" }
+      }
+    }
+  }
+}

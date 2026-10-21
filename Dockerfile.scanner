@@ -1,0 +1,35 @@
+# CI image with the `codeatlas` CLI and all analyzers. Usage in a checkout:
+#   docker run --rm -v "$PWD:/repo" -e CODEATLAS_URL -e CODEATLAS_TOKEN codeatlas-scanner scan /repo --repo my-service
+
+FROM maven:3.9-eclipse-temurin-21 AS java
+WORKDIR /src
+COPY analyzers/java/pom.xml ./
+RUN mvn -q dependency:go-offline
+COPY analyzers/java/src ./src
+RUN mvn -q -DskipTests package
+
+FROM node:22-bookworm-slim AS ts
+WORKDIR /src
+COPY analyzers/typescript/package.json analyzers/typescript/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY analyzers/typescript/ ./
+RUN npm run build && npm prune --omit=dev
+
+FROM golang:1.26-bookworm AS go
+WORKDIR /src
+COPY core/ ./core/
+COPY analyzers/infra/ ./analyzers/infra/
+RUN cd core && CGO_ENABLED=0 go build -trimpath -o /out/codeatlas ./cmd/codeatlas
+RUN cd analyzers/infra && CGO_ENABLED=0 go build -trimpath -o /out/codeatlas-infra .
+
+FROM eclipse-temurin:21-jre
+RUN apt-get update && apt-get install -y --no-install-recommends git nodejs && rm -rf /var/lib/apt/lists/*
+COPY --from=go /out/codeatlas /out/codeatlas-infra /opt/codeatlas/
+COPY --from=java /src/target/codeatlas-java.jar /opt/codeatlas/
+COPY --from=ts /src/dist /opt/codeatlas/codeatlas-ts/dist
+COPY --from=ts /src/node_modules /opt/codeatlas/codeatlas-ts/node_modules
+COPY --from=ts /src/package.json /opt/codeatlas/codeatlas-ts/
+# the analysed checkout is usually owned by another uid
+RUN git config --system --add safe.directory '*'
+ENV PATH=/opt/codeatlas:$PATH
+ENTRYPOINT ["codeatlas"]

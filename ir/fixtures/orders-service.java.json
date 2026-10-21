@@ -1,0 +1,63 @@
+{
+  "irVersion": "1",
+  "source": {
+    "repo": "orders-service",
+    "commit": "3f2a9c1",
+    "branch": "main",
+    "analyzer": { "name": "java", "version": "0.0.0-fixture" },
+    "generatedAt": "2026-10-12T00:00:00Z"
+  },
+  "nodes": [
+    { "id": "svc:orders-service", "kind": "service", "name": "orders-service", "otel": { "service.name": "orders-service" } },
+    { "id": "pkg:com.acme.orders", "kind": "package", "name": "com.acme.orders", "parent": "svc:orders-service", "language": "java" },
+    {
+      "id": "class:com.acme.orders.OrderController", "kind": "class", "name": "OrderController",
+      "qualifiedName": "com.acme.orders.OrderController", "parent": "pkg:com.acme.orders", "language": "java",
+      "location": { "file": "src/main/java/com/acme/orders/OrderController.java", "startLine": 12, "endLine": 48 },
+      "attrs": { "stereotype": "RestController" }
+    },
+    {
+      "id": "method:com.acme.orders.OrderController#getOrder(long)", "kind": "method", "name": "getOrder",
+      "parent": "class:com.acme.orders.OrderController", "language": "java",
+      "location": { "file": "src/main/java/com/acme/orders/OrderController.java", "startLine": 20, "endLine": 26 },
+      "otel": { "code.namespace": "com.acme.orders.OrderController", "code.function": "getOrder" }
+    },
+    {
+      "id": "endpoint:GET /orders/{id}", "kind": "endpoint", "name": "GET /orders/{id}", "parent": "svc:orders-service",
+      "otel": { "http.request.method": "GET", "http.route": "/orders/{id}" }
+    },
+    {
+      "id": "class:com.acme.orders.OrderService", "kind": "class", "name": "OrderService",
+      "qualifiedName": "com.acme.orders.OrderService", "parent": "pkg:com.acme.orders", "language": "java",
+      "location": { "file": "src/main/java/com/acme/orders/OrderService.java", "startLine": 9, "endLine": 60 },
+      "attrs": { "stereotype": "Service" }
+    },
+    {
+      "id": "method:com.acme.orders.OrderService#find(long)", "kind": "method", "name": "find",
+      "parent": "class:com.acme.orders.OrderService", "language": "java",
+      "location": { "file": "src/main/java/com/acme/orders/OrderService.java", "startLine": 18, "endLine": 31 },
+      "otel": { "code.namespace": "com.acme.orders.OrderService", "code.function": "find" }
+    },
+    {
+      "id": "class:com.acme.orders.Order", "kind": "class", "name": "Order",
+      "qualifiedName": "com.acme.orders.Order", "parent": "pkg:com.acme.orders", "language": "java",
+      "location": { "file": "src/main/java/com/acme/orders/Order.java", "startLine": 8, "endLine": 40 },
+      "attrs": { "stereotype": "Entity" }
+    },
+    { "id": "db:orders-db", "kind": "database", "name": "orders-db", "otel": { "db.system": "postgresql", "db.namespace": "orders" } },
+    { "id": "table:orders-db.orders", "kind": "table", "name": "orders", "parent": "db:orders-db", "otel": { "db.collection.name": "orders" } },
+    { "id": "topic:order-events", "kind": "topic", "name": "order-events", "otel": { "messaging.destination.name": "order-events" } },
+    { "id": "ext:payments.example.com", "kind": "external", "name": "payments.example.com", "otel": { "server.address": "payments.example.com" } }
+  ],
+  "edges": [
+    { "source": "endpoint:GET /orders/{id}", "target": "method:com.acme.orders.OrderController#getOrder(long)", "kind": "handles" },
+    {
+      "source": "method:com.acme.orders.OrderController#getOrder(long)", "target": "method:com.acme.orders.OrderService#find(long)", "kind": "calls",
+      "locations": [{ "file": "src/main/java/com/acme/orders/OrderController.java", "startLine": 23 }]
+    },
+    { "source": "class:com.acme.orders.Order", "target": "table:orders-db.orders", "kind": "references", "attrs": { "via": "jpa" } },
+    { "source": "method:com.acme.orders.OrderService#find(long)", "target": "table:orders-db.orders", "kind": "reads" },
+    { "source": "method:com.acme.orders.OrderService#find(long)", "target": "topic:order-events", "kind": "publishes" },
+    { "source": "method:com.acme.orders.OrderService#find(long)", "target": "ext:payments.example.com", "kind": "http_calls" }
+  ]
+}

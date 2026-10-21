@@ -1,0 +1,4 @@
+{
+  "name": "blog-api",
+  "dependencies": { "express": "^4.19.0", "typeorm": "^0.3.20" }
+}

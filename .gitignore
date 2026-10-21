@@ -1,0 +1,26 @@
+node_modules/
+web/dist/
+web/tsconfig.tsbuildinfo
+bin/
+analyzers/infra/infra
+.env
+*.log
+.DS_Store
+target/
+dist/
+
+# local dev database (make dev-db)
+.dev/
+
+# cloned repositories. Analysis checkouts are created outside this tree and deleted
+# after each run; these names are ignored so a clone dropped here is never committed.
+codeatlas-analysis-*/
+/openjdk/
+/jdk/
+/clones/
+
+# sample systems analyzed locally (shop, ledger). They stay on disk for tests.
+demo/
+
+# local agent notes
+.claude/

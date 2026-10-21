@@ -1,0 +1,7 @@
+**/node_modules
+web/dist
+bin
+.git
+deploy/compose/.env
+**/target
+**/dist

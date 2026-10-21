@@ -1,0 +1,25 @@
+# Example: re-index a repository in CodeAtlas on every push to the default branch.
+# Copy to .github/workflows/codeatlas.yml in the repository you want mapped, and add
+# CODEATLAS_URL (repository variable) and CODEATLAS_TOKEN (secret; an API token from
+# POST /api/v1/tokens, created by an admin if the repo isn't registered yet).
+name: codeatlas
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan and upload
+        run: |
+          docker run --rm -v "$PWD:/repo" \
+            -e CODEATLAS_URL -e CODEATLAS_TOKEN \
+            ghcr.io/your-org/codeatlas-scanner:latest \
+            scan /repo --repo "${GITHUB_REPOSITORY#*/}" --commit "$GITHUB_SHA" --branch "$GITHUB_REF_NAME"
+        env:
+          CODEATLAS_URL: ${{ vars.CODEATLAS_URL }}
+          CODEATLAS_TOKEN: ${{ secrets.CODEATLAS_TOKEN }}

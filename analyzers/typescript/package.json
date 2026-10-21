@@ -1,0 +1,21 @@
+{
+  "name": "codeatlas-typescript",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CodeAtlas analyzer for TypeScript/JavaScript repositories",
+  "type": "module",
+  "bin": {
+    "codeatlas-ts": "dist/src/main.js"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.json",
+    "test": "npm run build && node --test 'dist/test/**/*.test.js'"
+  },
+  "dependencies": {
+    "ts-morph": "28.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "typescript": "5.9.3"
+  }
+}

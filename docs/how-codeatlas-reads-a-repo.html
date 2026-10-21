@@ -1,0 +1,848 @@
+<title>How CodeAtlas Reads a Repo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..100,500..800&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: a field manual. Sticky stage index on the left, one reading column on the right;
+   each stage is a numbered section because the pipeline really runs in that order. */
+:root {
+  --bg: #f3f5f8;
+  --surface: #ffffff;
+  --fg: #172030;
+  --muted: #586378;
+  --line: #d8dee8;
+  --accent: #2a55c6;
+  --accent-soft: #e5ebfa;
+  --warn: #8f5508;
+  --warn-soft: #faf0df;
+  --code-bg: #eceff5;
+  --font-display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --font-body: "Source Serif 4", Georgia, "Times New Roman", serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --step-0: 1.0625rem;
+  --step-1: 1.25rem;
+  --step-2: 1.6rem;
+  --step-3: 2.4rem;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1219; --surface: #151b25; --fg: #e1e6ee; --muted: #98a3b6; --line: #29313f;
+    --accent: #88a7ff; --accent-soft: #1b2540; --warn: #e9b65e; --warn-soft: #2a2216; --code-bg: #1a212d;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e1219; --surface: #151b25; --fg: #e1e6ee; --muted: #98a3b6; --line: #29313f;
+  --accent: #88a7ff; --accent-soft: #1b2540; --warn: #e9b65e; --warn-soft: #2a2216; --code-bg: #1a212d;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-body);
+  font-size: var(--step-0);
+  line-height: 1.6;
+  padding-inline: 16px;
+  padding-block: 0;
+}
+.page {
+  max-width: 1180px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: 250px minmax(0, 1fr);
+  gap: 56px;
+  padding-block: 48px 96px;
+}
+@media (max-width: 920px) {
+  .page { grid-template-columns: minmax(0, 1fr); gap: 24px; padding-block: 28px 64px; }
+}
+
+/* ---------- index */
+nav.toc {
+  position: sticky;
+  top: calc(env(safe-area-inset-top, 0px) + 24px);
+  align-self: start;
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+  font-family: var(--font-display);
+  font-size: 0.86rem;
+  line-height: 1.35;
+}
+@media (max-width: 920px) {
+  nav.toc { position: static; max-height: none; border: 1px solid var(--line); background: var(--surface); padding: 16px; border-radius: 6px; }
+}
+nav.toc .label { text-transform: uppercase; letter-spacing: 0.09em; font-size: 0.72rem; color: var(--muted); font-weight: 700; margin-bottom: 10px; }
+nav.toc ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+nav.toc ol ol { padding-left: 14px; margin: 2px 0 6px; border-left: 1px solid var(--line); }
+nav.toc a { display: flex; gap: 8px; color: var(--fg); text-decoration: none; padding: 4px 6px; border-radius: 4px; }
+nav.toc a:hover { background: var(--accent-soft); }
+nav.toc a:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+nav.toc .n { color: var(--accent); font-variant-numeric: tabular-nums; min-width: 1.6em; font-weight: 700; }
+nav.toc ol ol a { color: var(--muted); }
+
+/* ---------- reading column */
+main { min-width: 0; max-width: 46rem; }
+header.doc { margin-bottom: 40px; }
+.eyebrow { font-family: var(--font-display); text-transform: uppercase; letter-spacing: 0.1em; font-size: 0.74rem; font-weight: 700; color: var(--accent); }
+h1, h2, h3, h4 { font-family: var(--font-display); text-wrap: balance; line-height: 1.15; margin: 0; }
+h1 { font-size: var(--step-3); font-weight: 800; font-stretch: 85%; letter-spacing: -0.01em; margin: 6px 0 16px; }
+h2 { font-size: var(--step-2); font-weight: 750; font-stretch: 88%; margin: 6px 0 14px; }
+h3 { font-size: var(--step-1); font-weight: 700; margin: 34px 0 10px; }
+h4 { font-size: 1rem; font-weight: 700; margin: 22px 0 6px; }
+p { margin: 0 0 14px; }
+.lede { font-size: 1.2rem; line-height: 1.55; color: var(--fg); }
+.meta { font-family: var(--font-display); font-size: 0.82rem; color: var(--muted); }
+a { color: var(--accent); }
+strong { font-weight: 600; }
+ul, ol { padding-left: 1.3em; margin: 0 0 14px; }
+li { margin: 4px 0; }
+li > ul, li > ol { margin: 4px 0; }
+
+section.stage { padding-top: 44px; margin-top: 44px; border-top: 1px solid var(--line); scroll-margin-top: 16px; }
+section.stage > .eyebrow { display: flex; gap: 10px; align-items: baseline; }
+section.stage > .eyebrow .num { font-size: 0.74rem; background: var(--accent); color: var(--bg); padding: 2px 7px; border-radius: 3px; font-variant-numeric: tabular-nums; }
+h3[id], h4[id] { scroll-margin-top: 16px; }
+.sub { color: var(--muted); font-family: var(--font-display); font-weight: 600; font-size: 0.9rem; margin-right: 6px; font-variant-numeric: tabular-nums; }
+
+code, pre, kbd { font-family: var(--font-mono); font-size: 0.82em; }
+:not(pre) > code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; overflow-wrap: anywhere; }
+pre {
+  background: var(--code-bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 14px 16px;
+  overflow-x: auto;
+  line-height: 1.5;
+  margin: 0 0 16px;
+  font-size: 0.8rem;
+}
+pre .c { color: var(--muted); }
+pre .k { color: var(--accent); font-weight: 600; }
+
+/* pipeline strip */
+ol.pipeline { list-style: none; padding: 0; margin: 28px 0 8px; display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; counter-reset: p; }
+ol.pipeline li { margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; font-family: var(--font-display); font-size: 0.86rem; line-height: 1.35; color: var(--muted); }
+ol.pipeline li b { display: block; color: var(--fg); font-size: 0.98rem; margin-bottom: 3px; }
+ol.pipeline li .n { color: var(--accent); font-weight: 800; font-variant-numeric: tabular-nums; margin-right: 6px; }
+ol.pipeline li.where { background: transparent; border-style: dashed; }
+
+/* tables */
+.table-wrap { overflow-x: auto; margin: 0 0 18px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 0.9rem; line-height: 1.45; }
+th, td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+tr:last-child td { border-bottom: 0; }
+th { font-family: var(--font-display); font-size: 0.74rem; text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted); font-weight: 700; background: var(--code-bg); }
+td:first-child { white-space: nowrap; }
+td.wrap { white-space: normal; }
+
+/* callouts */
+.note, .limit, .why { border-radius: 6px; padding: 12px 16px; margin: 0 0 18px; font-size: 0.95rem; }
+.note { background: var(--accent-soft); }
+.why { background: var(--surface); border: 1px solid var(--line); }
+.limit { background: var(--warn-soft); }
+.note > :last-child, .limit > :last-child, .why > :last-child { margin-bottom: 0; }
+.tag { font-family: var(--font-display); text-transform: uppercase; letter-spacing: 0.08em; font-size: 0.7rem; font-weight: 800; display: block; margin-bottom: 4px; }
+.note .tag { color: var(--accent); }
+.limit .tag { color: var(--warn); }
+.why .tag { color: var(--muted); }
+
+/* pass list */
+ol.passes { counter-reset: pass; list-style: none; padding: 0; display: grid; gap: 6px; margin: 16px 0 22px; }
+ol.passes li { counter-increment: pass; display: grid; grid-template-columns: 2.2em minmax(0, 1fr); gap: 8px; margin: 0; font-size: 0.95rem; }
+ol.passes li::before { content: counter(pass); font-family: var(--font-display); font-weight: 800; color: var(--accent); font-variant-numeric: tabular-nums; text-align: right; }
+ol.passes li a { color: var(--fg); }
+
+/* trace */
+ol.trace { list-style: none; padding: 0; margin: 0 0 22px; border-left: 2px solid var(--accent); }
+ol.trace > li { position: relative; padding: 2px 0 14px 22px; margin: 0; }
+ol.trace > li::before { content: ""; position: absolute; left: -6px; top: 10px; width: 10px; height: 10px; border-radius: 50%; background: var(--bg); border: 2px solid var(--accent); }
+ol.trace > li > b { font-family: var(--font-display); font-size: 0.92rem; }
+
+dl.kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 16px; margin: 0 0 18px; font-size: 0.93rem; }
+dl.kv dt { font-family: var(--font-mono); font-size: 0.8rem; color: var(--accent); padding-top: 3px; }
+dl.kv dd { margin: 0; }
+@media (max-width: 560px) { dl.kv { grid-template-columns: minmax(0, 1fr); } dl.kv dd { margin-bottom: 8px; } }
+
+footer { margin-top: 64px; padding-top: 18px; border-top: 1px solid var(--line); color: var(--muted); font-family: var(--font-display); font-size: 0.82rem; }
+</style>
+
+<div class="page">
+<nav class="toc" aria-label="Contents">
+  <div class="label">Contents</div>
+  <ol>
+    <li><a href="#overview"><span class="n">·</span>Overview</a></li>
+    <li><a href="#graph"><span class="n">·</span>What gets produced</a></li>
+    <li><a href="#clone"><span class="n">1</span>Clone</a></li>
+    <li><a href="#detect"><span class="n">2</span>Detect and launch</a></li>
+    <li><a href="#java"><span class="n">3</span>Java analyzer</a>
+      <ol>
+        <li><a href="#j-layout">Modules and config</a></li>
+        <li><a href="#j-parse">Parsing</a></li>
+        <li><a href="#j-declare">Declarations</a></li>
+        <li><a href="#j-persist">Entities and repositories</a></li>
+        <li><a href="#j-relate">Structural relations</a></li>
+        <li><a href="#j-inbound">Endpoints, clients, listeners</a></li>
+        <li><a href="#j-lambdas">Task lambdas</a></li>
+        <li><a href="#j-calls">Call graph and conditions</a></li>
+        <li><a href="#j-io">I/O detection</a></li>
+        <li><a href="#j-values">Value tracing</a></li>
+        <li><a href="#j-sql">Reading SQL</a></li>
+        <li><a href="#j-entry">Entry points and threads</a></li>
+        <li><a href="#j-config">Config and env reads</a></li>
+        <li><a href="#j-cf">Control flow and variables</a></li>
+        <li><a href="#j-build">Building the document</a></li>
+      </ol>
+    </li>
+    <li><a href="#trace"><span class="n">·</span>Worked trace</a></li>
+    <li><a href="#ts"><span class="n">4</span>TypeScript analyzer</a></li>
+    <li><a href="#infra"><span class="n">5</span>Infra analyzer</a></li>
+    <li><a href="#store"><span class="n">6</span>Validate and store</a></li>
+    <li><a href="#merge"><span class="n">7</span>Merge</a></li>
+    <li><a href="#derive"><span class="n">8</span>Flows in the browser</a></li>
+    <li><a href="#limits"><span class="n">·</span>What it cannot see</a></li>
+  </ol>
+</nav>
+
+<main>
+<header class="doc" id="overview">
+  <div class="eyebrow">CodeAtlas internals</div>
+  <h1>How CodeAtlas reads a repo</h1>
+  <p class="lede">CodeAtlas never runs your program. After the clone it parses the source into syntax trees and writes down only what it can prove: a graph of nodes and edges, each edge carrying the file and line that justify it. Every "flow" you see in the UI is assembled later, in the browser, by walking that graph.</p>
+  <p>This page follows one analysis from the moment you press <em>Analyze</em> to the moment a tab can draw. Stages are numbered in the order the code runs them. The Java analyzer gets the most space because it does most of the extraction. A <a href="#trace">worked trace</a> through <code>demo/ledger</code> shows the rules applied to real code.</p>
+  <p class="meta">Read from: core/internal/analysis · core/internal/scan · analyzers/java · analyzers/typescript · analyzers/infra · core/internal/store · core/internal/graph · web/src/graph. Current as of 21 October 2026.</p>
+
+  <ol class="pipeline" aria-label="Pipeline stages">
+    <li><span class="n">1</span><b>Clone</b>Shallow clone of the default branch head into a temp dir</li>
+    <li><span class="n">2</span><b>Detect</b>Pick analyzers by file type, launch each as a process</li>
+    <li><span class="n">3–5</span><b>Extract</b>Java, TypeScript and infra analyzers each write an IR file</li>
+    <li><span class="n">6</span><b>Store</b>Validate strictly, save one snapshot per analyzer</li>
+    <li><span class="n">7</span><b>Merge</b>Combine snapshots, link code to containers and hosts</li>
+    <li><span class="n">8</span><b>Derive</b>The browser walks calls to build flows per tab</li>
+  </ol>
+</header>
+
+<!-- ================================================================== -->
+<section class="stage" id="graph">
+  <div class="eyebrow">Before the steps</div>
+  <h2>What gets produced: the IR graph</h2>
+  <p>Every analyzer writes the same format, the IR (intermediate representation, <code>ir/schema/ir.v1.schema.json</code>). Knowing its shape makes every later step easier to follow.</p>
+  <dl class="kv">
+    <dt>node</dt><dd><code>id</code>, <code>kind</code>, <code>name</code>, <code>parent</code> (containment), <code>location</code> (file, start/end line), <code>attrs</code> (free-form facts), <code>otel</code> (the OpenTelemetry names runtime data will use for the same thing)</dd>
+    <dt>edge</dt><dd><code>source</code>, <code>target</code>, <code>kind</code>, <code>locations</code> (every line where it happens, up to 20), <code>attrs</code></dd>
+  </dl>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Node kinds</th><th>Edge kinds</th></tr></thead>
+    <tbody><tr>
+      <td class="wrap">service, module, package, file, class, interface, enum, function, method, field, endpoint, database, table, topic, queue, external, container, deployment</td>
+      <td class="wrap">contains, imports, depends_on, calls, extends, implements, references, handles, reads, writes, publishes, consumes, http_calls, deploys, connects_to, runs</td>
+    </tr></tbody>
+  </table></div>
+
+  <h3>IDs are computed, not counted</h3>
+  <p>Every ID is built from what the thing is, so two runs, two commits or two analyzers that see the same thing produce the same ID. Merging and comparing depend on this.</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Pattern</th><th>Example</th></tr></thead>
+    <tbody>
+      <tr><td><code>svc:&lt;app&gt;</code> / <code>mod:&lt;name&gt;</code></td><td class="wrap">one program, or a library. Several programs built from one module share the <code>mod:</code>; each program is a <code>svc:</code> with a <code>runs</code> edge to its main</td></tr>
+      <tr><td><code>pkg:&lt;package&gt;</code></td><td class="wrap"><code>pkg:com.acme.ledger.processor.db</code></td></tr>
+      <tr><td><code>class:&lt;FQN&gt;</code></td><td class="wrap"><code>class:com.acme.ledger.processor.db.TradeWriter</code></td></tr>
+      <tr><td><code>method:&lt;FQN&gt;#name(erased params)</code></td><td class="wrap"><code>method:…TradeWriter#insert(List)</code>. Generics are erased so overloads stay distinct but type arguments don't matter.</td></tr>
+      <tr><td><code>endpoint:&lt;service&gt;:&lt;VERB route&gt;</code></td><td class="wrap"><code>endpoint:orders:POST /orders/{id}</code>. The infra analyzer builds the same ID from an OpenAPI spec, so spec and controller merge into one node.</td></tr>
+      <tr><td><code>db:&lt;host&gt;/&lt;db&gt;</code>, <code>table:&lt;host&gt;/&lt;db&gt;.&lt;table&gt;</code></td><td class="wrap"><code>table:ledger-db/ledger.trade_book</code></td></tr>
+      <tr><td><code>topic:&lt;name&gt;</code>, <code>queue:&lt;name&gt;</code>, <code>ext:&lt;host&gt;</code></td><td class="wrap"><code>topic:trades</code>, <code>ext:payments.example.com</code></td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>The attrs that carry the meaning</h3>
+  <p>Kinds tell you <em>what</em> exists. These attributes carry most of what the diagrams show:</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Attribute</th><th>On</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>controlFlow</code></td><td>method</td><td class="wrap">The method body as structured steps (if, loop, try…), each listing the calls and I/O it makes. Activity, Sequence and the Program view's step lists read only this.</td></tr>
+      <tr><td><code>variables</code></td><td>method</td><td class="wrap">Every variable used, with scope (param, local, captured, field, static) and read/write counts.</td></tr>
+      <tr><td><code>entryPoint</code></td><td>method</td><td class="wrap"><code>main</code>, <code>thread</code> or <code>scheduled</code>: places where work starts without a request.</td></tr>
+      <tr><td><code>conditions</code>, <code>unconditional</code></td><td>edge</td><td class="wrap">The guard chains a call or I/O runs under (<code>for each t in trades › if t.valid()</code>), and whether any occurrence always runs.</td></tr>
+      <tr><td><code>async</code></td><td>calls edge</td><td class="wrap"><code>thread</code>, <code>scheduled</code>, <code>executor</code>, <code>shutdown</code>: the target runs later, on another thread.</td></tr>
+      <tr><td><code>payloads</code>, <code>responses</code></td><td>I/O edge</td><td class="wrap">Data types going out and coming back, with <code>typeId</code> when the type is in the repo.</td></tr>
+      <tr><td><code>operations</code></td><td>reads/writes</td><td class="wrap">What was done: <code>INSERT</code>, <code>save</code>, <code>hset</code>…</td></tr>
+      <tr><td><code>via</code></td><td>I/O edge</td><td class="wrap">The method that physically did the I/O when the effect is credited to its caller.</td></tr>
+      <tr><td><code>inferred: config</code>, <code>configKeys</code></td><td>topic edge</td><td class="wrap">The topic name came from config keys, not from tracing the code.</td></tr>
+      <tr><td><code>openedBy</code></td><td>endpoint</td><td class="wrap">The methods that bind a socket or HTTP server, so the program view knows who starts it.</td></tr>
+      <tr><td><code>columns</code></td><td>table</td><td class="wrap">From JPA fields or from columns named in SQL.</td></tr>
+      <tr><td><code>configReads</code>, <code>envReads</code></td><td>method</td><td class="wrap">Config keys (and the file they come from) and environment variables the method reads.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- ================================================================== -->
+<section class="stage" id="clone">
+  <div class="eyebrow"><span class="num">Stage 1</span> Server · core/internal/analysis</div>
+  <h2>Clone</h2>
+  <p>Pressing <em>Analyze</em> sends <code>POST /api/v1/repos/{repo}/analysis</code>. The server's <code>Runner</code> takes it from there.</p>
+  <ol class="trace">
+    <li><b>Queue.</b> The request is refused if the repo has no git URL or already has a queued or running job. Otherwise a job is created in state <code>queued</code>.</li>
+    <li><b>Wait for the slot.</b> The server runs one analysis at a time. The time limit (<code>CODEATLAS_ANALYSIS_TIMEOUT</code>) starts once the slot is taken, so waiting in the queue doesn't count. Cancel kills the context, which kills git or the analyzer process.</li>
+    <li><b>Make a workspace.</b> A temp dir <code>codeatlas-analysis-*</code> with <code>src/</code> for the checkout and <code>ir/</code> for analyzer output. It is deleted at the end whatever the outcome; nothing of your code stays on disk.</li>
+    <li><b>Pick credentials.</b> See the table below. In every case git runs with <code>GIT_TERMINAL_PROMPT=0</code>, an empty <code>GIT_ASKPASS</code> and <code>GCM_INTERACTIVE=never</code>, so it fails instead of waiting for a password nobody can type.</li>
+    <li><b>Clone.</b> <code>git clone --depth=1 --quiet -- &lt;url&gt; src</code>. Only the latest commit of the default branch is fetched, with no history. Credentials in the URL are removed before it's logged.</li>
+    <li><b>Identify the commit.</b> <code>git rev-parse HEAD</code> gives the commit SHA every snapshot is filed under; <code>rev-parse --abbrev-ref HEAD</code> gives the branch. State becomes <code>analyzing</code>.</li>
+    <li><b>Hand over</b> to the scanner (stage 2) with the checkout path, repo name, commit and branch.</li>
+  </ol>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Repo setting</th><th>How git authenticates</th></tr></thead>
+    <tbody>
+      <tr><td>Git profile chosen</td><td class="wrap"><code>GIT_SSH_COMMAND="ssh -i &lt;profile key&gt; -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new"</code> plus <code>-c url.git@github.com:.insteadOf=https://github.com/</code>, so an https GitHub URL also goes over SSH with that key. Fails early if the profile or its key file is missing.</td></tr>
+      <tr><td>No profile, server token set</td><td class="wrap">Your own credential helpers are switched off (they can open a keychain dialog and hang). A single helper answers only for <code>CODEATLAS_GIT_TOKEN_HOST</code> with user <code>x-access-token</code> and the token. The token travels in the environment, never in the command line.</td></tr>
+      <tr><td>Neither</td><td class="wrap">The server user's own git and SSH setup, with SSH forced into batch mode.</td></tr>
+    </tbody>
+  </table></div>
+  <p>Final states are <code>succeeded</code>, <code>failed</code> (with git's last stderr line, or "timed out after …") or <code>canceled</code>. The job log keeps the last 400 lines. Jobs live in memory only: a server restart forgets the run history but not the stored snapshots.</p>
+</section>
+
+<!-- ================================================================== -->
+<section class="stage" id="detect">
+  <div class="eyebrow"><span class="num">Stage 2</span> Server · core/internal/scan</div>
+  <h2>Detect languages and launch analyzers</h2>
+  <p>The same scanner runs on the server and in the <code>codeatlas</code> CLI, so a CI upload and a UI analysis produce identical output.</p>
+  <ol class="trace">
+    <li><b>Detect.</b> Walk the checkout, skipping hidden directories and <code>node_modules</code>, <code>target</code>, <code>build</code>, <code>dist</code>, <code>vendor</code>. Any <code>.java</code> file turns on the Java analyzer. Any <code>.ts .tsx .js .jsx .mjs</code> file (not <code>.d.ts</code>) turns on the TypeScript analyzer. The infra analyzer always runs. The walk stops once both languages have been seen.</li>
+    <li><b>Locate.</b> Each analyzer is found from its env var (<code>CODEATLAS_JAVA_ANALYZER</code>, <code>CODEATLAS_TS_ANALYZER</code>, <code>CODEATLAS_INFRA_ANALYZER</code>), then next to the server binary, then in the source tree's build output. Java runs as <code>java -jar codeatlas-java.jar</code>, TypeScript as <code>node dist/src/main.js</code>.</li>
+    <li><b>Run each as its own process:</b> <code>&lt;analyzer&gt; &lt;checkout&gt; --repo NAME --commit SHA [--branch B] --out ir/&lt;lang&gt;.ir.json</code>. Its stdout and stderr go straight into the job log.</li>
+    <li><b>Read and validate</b> the output file (stage 6), then store it before moving to the next analyzer.</li>
+  </ol>
+  <div class="why"><span class="tag">Why separate processes</span><p>A crash or a missing toolchain in one analyzer doesn't stop the others. The job ends <code>failed</code> and names the failures ("analyzers failed: typescript"), but snapshots from analyzers that succeeded are already saved and visible.</p></div>
+</section>
+
+<!-- ================================================================== -->
+<section class="stage" id="java">
+  <div class="eyebrow"><span class="num">Stage 3</span> analyzers/java</div>
+  <h2>Java analyzer</h2>
+  <p>This is where most of the extraction happens. It is built on JavaParser (syntax trees) with its symbol solver (which works out what a name refers to). It makes fixed passes over every parsed file. <strong>The order matters</strong>: later passes look up tables that earlier passes filled. I/O detection, for example, can only trace a table name back through callers once the full call graph exists.</p>
+  <ol class="passes">
+    <li><a href="#j-layout">Find build modules; read each module's config files</a></li>
+    <li><a href="#j-parse">Parse every source file</a></li>
+    <li><a href="#j-declare">Declare modules, packages, types, fields and methods</a></li>
+    <li><a href="#j-persist">Spring Data repositories and JPA entity tables</a></li>
+    <li><a href="#j-relate">Package imports, inheritance, field references, entity relations</a></li>
+    <li><a href="#j-inbound">Spring endpoints, Feign clients, message listeners</a></li>
+    <li><a href="#j-lambdas">Give lambdas that run as their own task a node</a></li>
+    <li><a href="#j-calls">Call graph, with the conditions around each call</a></li>
+    <li><a href="#j-io">I/O: framework calls, then plain-Java clients (uses value tracing and SQL reading)</a></li>
+    <li><a href="#j-io">Link outgoing TCP connections to servers found in the repo</a></li>
+    <li><a href="#j-entry">Mark entry points: main, threads, scheduled jobs</a></li>
+    <li><a href="#j-entry">Async edges: where work is handed to another thread</a></li>
+    <li><a href="#j-config">Config keys and environment variables read</a></li>
+    <li><a href="#j-cf">Control flow and variables for every method and task lambda</a></li>
+    <li><a href="#j-build">Build the document, dropping dangling references</a></li>
+  </ol>
+
+  <!-- ------------------------------------------------ 3.1 -->
+  <h3 id="j-layout"><span class="sub">3.1</span>Find modules and read config</h3>
+  <p><code>ProjectLayout</code> walks the repo (skipping <code>.git target build out node_modules .idea .gradle bin</code>).</p>
+  <ul>
+    <li><strong>A module</strong> is a directory with <code>pom.xml</code>, <code>build.gradle</code> or <code>build.gradle.kts</code> that has sources: <code>src/main/java</code>, or the <code>&lt;build&gt;&lt;sourceDirectory&gt;</code> its own pom or a parent pom declares, resolved relative to the module the way Maven does. A repo with no build files at all is treated as one module.</li>
+    <li><strong>Name:</strong> the pom's <code>&lt;artifactId&gt;</code>, else the directory name. <strong>App name:</strong> <code>spring.application.name</code> if set, else the name.</li>
+    <li><strong>Config map</strong> (from <code>src/main/resources</code> only), in this order, first file to define a key wins:
+      <ol>
+        <li><code>application.properties</code></li>
+        <li><code>application.yml/.yaml</code>, <em>first YAML document only</em> (later documents are usually profile overrides), flattened to dotted keys</li>
+        <li>every other <code>*.properties</code>, <code>*.config</code>, <code>*.cfg</code> alphabetically, with <code>.example/.sample/.template/.dist</code> copies last (they only fill keys the real files lack)</li>
+      </ol>
+    </li>
+    <li><strong>Key → file index:</strong> for every key, which files mention it. Used later to say "read from processor.properties".</li>
+    <li><strong>Database:</strong> <code>spring.datasource.url</code>, else the first value anywhere that starts with <code>jdbc:</code>. <code>jdbc:&lt;system&gt;://&lt;host&gt;[:port]/&lt;db&gt;</code> gives system, host and database name; <code>jdbc:h2:mem:testdb</code> gives system and name. <code>postgres</code> becomes <code>postgresql</code>, <code>sqlserver</code> becomes <code>mssql</code>.</li>
+    <li><strong>Redis host:</strong> the first of <code>spring.data.redis.host</code>, <code>spring.redis.host</code>, <code>redis.host</code>, <code>redis.hostname</code>, <code>cache.redis.host</code> that isn't a <code>${…}</code> placeholder.</li>
+  </ul>
+  <pre><span class="c"># demo/ledger/src/main/resources/processor.properties</span>
+db.url=jdbc:postgresql://ledger-db:5432/ledger   <span class="c">→ postgresql, host ledger-db, db ledger</span>
+db.trades.table=trade_book                        <span class="c">→ used by value tracing (see the worked trace)</span>
+redis.host=ledger-cache                           <span class="c">→ Redis node db:redis/ledger-cache</span></pre>
+
+  <!-- ------------------------------------------------ 3.2 -->
+  <h3 id="j-parse"><span class="sub">3.2</span>Parse</h3>
+  <p>One JavaParser instance at Java 21 language level. Its symbol solver combines <strong>JDK reflection</strong> (for <code>java.*</code> types) and <strong>every module's source roots</strong> (for your own types). Files that fail to parse are logged and counted; the rest continue.</p>
+  <div class="note"><span class="tag">Important</span><p>Your dependencies' jars are <em>not</em> given to the solver. Spring, Kafka, Netty and Jedis types are known only by the names written in your code. That is why detection keys on simple type names (<code>KafkaTemplate</code>, <code>Jedis</code>, <code>ServerBootstrap</code>), and why almost every resolution step has a fallback for when the solver gives up.</p></div>
+
+  <!-- ------------------------------------------------ 3.3 -->
+  <h3 id="j-declare"><span class="sub">3.3</span>Declare what exists</h3>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Thing</th><th>Node and facts recorded</th></tr></thead>
+    <tbody>
+      <tr><td>Module</td><td class="wrap">One program per main class the build would put in a jar: maven-shade, jar, assembly, spring-boot, jib, appassembler or Gradle <code>mainClass</code> / manifest (exec-maven only when nothing is packaged). With no declaration, a <code>@SpringBootApplication</code> class, else every class with a <code>main</code> the launcher accepts. One program: the module <em>is</em> that <strong>service</strong>. Several: the module stays a <strong>module</strong> holding the code, and each program is its own service (<code>attrs.mainClass</code>, <code>attrs.jar</code>, <code>attrs.module</code>, a <code>runs</code> edge to its main). Views credit the module's code to the programs whose main reaches it. <code>attrs.path</code> is the directory the program is launched from.</td></tr>
+      <tr><td>Package</td><td class="wrap"><code>pkg:&lt;name&gt;</code>, parent = module.</td></tr>
+      <tr><td>Type</td><td class="wrap">class / interface (annotation types count as interfaces) / enum. Visibility, annotations, <code>stereotype</code> (first of SpringBootApplication, RestController, Controller, Service, Component, Repository, Configuration, Entity, MappedSuperclass, Embeddable, FeignClient), abstract, record, enum values, and <code>doc</code>: the first Javadoc paragraph, tags stripped, up to 400 characters. Nested types get the outer type as parent.</td></tr>
+      <tr><td>Field</td><td class="wrap">Declared type as written, visibility, static, final. Record components become fields too.</td></tr>
+      <tr><td>Method / constructor</td><td class="wrap">Parameters (name, type), return type, static, abstract (abstract <em>or</em> bodyless), constructor flag, annotations, doc; <code>otel code.namespace/code.function</code> so runtime spans can be matched to it later.</td></tr>
+    </tbody>
+  </table></div>
+  <p>Two lookup rules are used by every later pass:</p>
+  <h4>Resolving a type name</h4>
+  <p>For a type written in code, try in order and stop at the first hit: the written name is already a known FQN → a single-type import with that simple name → same package → a nested type of an enclosing class → a wildcard import that contains it → the simple name is unique in the repo → the symbol solver. If none works and it isn't in the repo, the answer is "unknown".</p>
+  <h4>Finding a call's receiver type</h4>
+  <p>For <code>orders.save(x)</code>: find where <code>orders</code> is declared, in this order: a parameter of the enclosing method, a local (unless declared with <code>var</code>), a field in scope. Resolve that declared type with the rule above. Only if there's no declaration does it ask the solver to type the expression. Reading declarations first is faster, and it works when the solver can't load a library type.</p>
+
+  <!-- ------------------------------------------------ 3.4 -->
+  <h3 id="j-persist"><span class="sub">3.4</span>Entities and repositories (Spring/JPA)</h3>
+  <p>These run before any call analysis because later passes need two lookup tables: <em>repository → entity</em> and <em>entity → table</em>.</p>
+  <ul>
+    <li><strong>Repository:</strong> an interface extending one of <code>Repository, CrudRepository, ListCrudRepository, PagingAndSortingRepository, ListPagingAndSortingRepository, JpaRepository, MongoRepository, ReactiveCrudRepository, R2dbcRepository, ElasticsearchRepository</code> with type arguments. The first type argument is the entity.</li>
+    <li><strong>Entity table:</strong> a class with <code>@Entity</code>. Table name from <code>@Table(name=…)</code>, else <code>snake_case(ClassName)</code>. It belongs to the module's database node (<code>db:&lt;host&gt;/&lt;db&gt;</code>; if the URL is unknown, <code>db:&lt;app&gt;/&lt;app&gt;-db</code> with system "unknown").</li>
+    <li><strong>Columns</strong> from fields, including those inherited from <code>@MappedSuperclass</code> parents:
+      <ul>
+        <li>skipped: static, <code>transient</code>, <code>@Transient</code>, <code>@OneToMany</code>, <code>@ManyToMany</code>, <code>@ElementCollection</code>, <code>@Embedded</code>, and the <code>mappedBy</code> side of <code>@OneToOne</code></li>
+        <li><code>@ManyToOne</code>/<code>@OneToOne</code> → foreign-key column named by <code>@JoinColumn(name)</code> or <code>&lt;field&gt;_id</code></li>
+        <li>other fields → <code>@Column(name)</code> or <code>snake_case(field)</code></li>
+        <li><code>@Id</code>/<code>@EmbeddedId</code> → primary key; <code>nullable=false</code>, <code>unique=true</code>, <code>optional=false</code> recorded</li>
+      </ul>
+    </li>
+    <li>An edge entity class → table (<code>references</code>, <code>via: jpa</code>), so a class diagram and the data model connect.</li>
+  </ul>
+
+  <!-- ------------------------------------------------ 3.5 -->
+  <h3 id="j-relate"><span class="sub">3.5</span>Structural relations</h3>
+  <ul>
+    <li><strong>Package dependencies:</strong> each single-type import of an in-repo type from another package adds to a <code>depends_on</code> edge, with <code>attrs.imports</code> counting them.</li>
+    <li><strong>Inheritance:</strong> <code>extends</code>/<code>implements</code> to in-repo types (an interface extending an interface is <code>extends</code>, as in UML). Library supertypes (<code>Runnable</code>, <code>ChannelInboundHandlerAdapter</code>) are kept as text on the class.</li>
+    <li><strong>Field references:</strong> a field whose type mentions an in-repo type anywhere (including generic arguments and arrays) gives a <code>references</code> edge listing the field names, with <code>many: true</code> for arrays and List/Set/Collection/Iterable/Map/Optional.</li>
+    <li><strong>Table relations:</strong> for entity fields with <code>@ManyToOne</code>, <code>@OneToOne</code> or <code>@ManyToMany</code> (not the mappedBy side) pointing to another entity, a table → table edge with cardinality and the join column or join table.</li>
+  </ul>
+
+  <!-- ------------------------------------------------ 3.6 -->
+  <h3 id="j-inbound"><span class="sub">3.6</span>Declared endpoints, clients and listeners</h3>
+  <p>These are found from annotations alone, without looking inside method bodies.</p>
+  <h4>Spring MVC endpoints</h4>
+  <ol>
+    <li>Only classes with <code>@RestController</code> or <code>@Controller</code>.</li>
+    <li>Class prefixes from <code>@RequestMapping(value|path)</code>.</li>
+    <li>Each method with <code>@Get/Post/Put/Delete/PatchMapping</code>, or <code>@RequestMapping(method=…)</code> (no method means <code>ANY</code>).</li>
+    <li>Every prefix × path × verb becomes an endpoint. Routes are joined, slashes collapsed, regex constraints removed (<code>{id:\d+}</code> → <code>{id}</code>), trailing slash dropped.</li>
+    <li>Edge endpoint <code>handles</code> → handler method.</li>
+    <li><strong>Data shapes:</strong> <code>@RequestBody</code> parameter → <code>attrs.request</code>; <code>@PathVariable</code>, <code>@RequestParam</code>, <code>@RequestHeader</code>, <code>@CookieValue</code> → <code>attrs.inputs</code>; the return type → <code>attrs.response</code>, unwrapping <code>ResponseEntity, Optional, Mono, Flux, CompletableFuture, CompletionStage, HttpEntity, DeferredResult, Callable, ConsumerRecord, Message</code> to their last type argument.</li>
+  </ol>
+  <h4>Feign clients</h4>
+  <p><code>@FeignClient(url | name | value)</code> → an <code>external</code> node for the host (a bare service name is accepted as a host). Each mapped method → <code>http_calls</code> with verb, path, client <code>feign</code>, payload (the <code>@RequestBody</code> type, else <code>params(a, b)</code>) and response type.</p>
+  <h4>Message listeners</h4>
+  <p><code>@KafkaListener(topics|value)</code> → <code>consumes</code> a topic; <code>@RabbitListener(queues)</code> and <code>@JmsListener(destination)</code> → <code>consumes</code> a queue. The payload type is the <code>@Payload</code> parameter, else the first parameter that isn't a header or an <code>Acknowledgment</code>, <code>Channel</code>, <code>MessageHeaders</code> or <code>Consumer</code>.</p>
+
+  <!-- ------------------------------------------------ 3.7 -->
+  <h3 id="j-lambdas"><span class="sub">3.7</span>Lambdas that run as their own task</h3>
+  <p>Code inside <code>new Thread(() -&gt; …)</code> runs later, on another thread. If its calls were credited to the method that created the lambda, that method would look like it does the work. So these lambdas get their own method node first:</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Lambda passed to</th><th>Node name</th></tr></thead>
+    <tbody>
+      <tr><td><code>server.createContext("/x", λ)</code></td><td>λ handler /x (line N)</td></tr>
+      <tr><td><code>schedule, scheduleAtFixedRate, scheduleWithFixedDelay</code></td><td>λ scheduleAtFixedRate (line N)</td></tr>
+      <tr><td><code>submit, execute, runAsync, supplyAsync, invokeAll</code></td><td>λ submit (line N)</td></tr>
+      <tr><td><code>new Thread(λ)</code></td><td>λ thread (line N)</td></tr>
+    </tbody>
+  </table></div>
+  <p>ID <code>method:&lt;class&gt;#lambda@&lt;line&gt;()</code>, parent = the class, <code>attrs.definedIn</code> = the method that created it. From here on, every lookup of "which function does this code belong to" (<code>callerOf</code>) returns the innermost such lambda, else the enclosing named method or constructor.</p>
+
+  <!-- ------------------------------------------------ 3.8 -->
+  <h3 id="j-calls"><span class="sub">3.8</span>Call graph and the conditions around calls</h3>
+  <p>For every method call expression in every file:</p>
+  <ol class="trace">
+    <li><b>Caller:</b> <code>callerOf(call)</code>, as above.</li>
+    <li><b>Target, first try:</b> the symbol solver resolves the call to a declaration. If it is in the repo, that's the target.</li>
+    <li><b>Target, fallback:</b> take the receiver's declared type (or the enclosing class when there's no receiver). Look for methods with the same name and the same number of arguments (or varargs). Exactly one → that's it. More than one → <strong>give up</strong>, since overloads can't be told apart without argument types. None → repeat in the in-repo superclass.</li>
+    <li><b>Record:</b> a <code>calls</code> edge with the line and guards (below), plus three tables for later passes: what this call resolved to (for control flow), the target (for value tracing), and the call site under the target (to find "who passes what to this parameter").</li>
+  </ol>
+  <p><code>new X(…)</code> is handled the same way: the resolved constructor, or the only constructor of <code>X</code> with that many parameters (anonymous classes excluded). The edge is named <code>new X</code>.</p>
+  <p>Calls into library code don't produce <code>calls</code> edges. They are what pass 9 inspects for I/O.</p>
+
+  <h4>Guards: under what condition does a call run?</h4>
+  <p>From the call, walk up the syntax tree to the function boundary. Each enclosing structure the call sits in adds one condition, outermost first:</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Call sits in</th><th>Condition text</th></tr></thead>
+    <tbody>
+      <tr><td><code>if (c)</code> then / else</td><td><code>if c</code> / <code>if not (c)</code></td></tr>
+      <tr><td><code>c ? a : b</code></td><td><code>if c</code> / <code>if not (c)</code></td></tr>
+      <tr><td><code>case A, B</code> / <code>default</code></td><td><code>if sel is A or B</code> / <code>default case of sel</code></td></tr>
+      <tr><td>for-each / for / while / do</td><td><code>for each x in xs</code> / <code>loop while c</code> / <code>while c</code> / <code>repeat while c</code></td></tr>
+      <tr><td><code>catch (E e)</code></td><td><code>on E</code></td></tr>
+      <tr><td>right side of <code>a &amp;&amp; b</code> / <code>a || b</code></td><td><code>if a</code> / <code>if not (a)</code></td></tr>
+      <tr><td>lambda passed to <code>ifPresent</code>, <code>orElseGet</code>, <code>forEach</code>, <code>exceptionally</code>, <code>onErrorResume</code>…</td><td><code>if present</code>, <code>if empty</code>, <code>for each</code>, <code>on error</code></td></tr>
+    </tbody>
+  </table></div>
+  <p>The chain is joined with <code> › </code> and stored on the edge in <code>conditions</code> (up to 10 distinct chains). If any occurrence has no guard, <code>unconditional: true</code> is set and diagrams draw a solid line; otherwise the line is dashed and labelled. Condition text is the source code itself, shortened to 90 characters.</p>
+
+  <!-- ------------------------------------------------ 3.9 -->
+  <h3 id="j-io"><span class="sub">3.9</span>I/O detection</h3>
+  <p>This pass decides what the program reads, writes, sends and receives. It runs after the call graph on purpose: a table or topic name is often decided in a caller, and finding it means walking call sites backwards.</p>
+
+  <h4>Step A: framework calls (each call, using its receiver type)</h4>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Receiver / call</th><th>Becomes</th><th>How the target is named</th></tr></thead>
+    <tbody>
+      <tr><td>A Spring Data repository</td><td class="wrap"><code>writes</code> if the method name starts with save, delete, remove, insert, update, persist, merge, flush; else <code>reads</code></td><td class="wrap">repository → entity → table (from 3.4). Entity type recorded as payload or response.</td></tr>
+      <tr><td><code>KafkaTemplate.send / executeInTransaction</code></td><td><code>publishes</code></td><td class="wrap">First argument: a constant, else value tracing. Payload = last argument's type, or the template's second type argument.</td></tr>
+      <tr><td><code>RabbitTemplate / AmqpTemplate.convertAndSend*</code></td><td><code>publishes</code> to a queue</td><td class="wrap">Routing key argument (constant only).</td></tr>
+      <tr><td><code>RestTemplate</code> getForObject, postForEntity, exchange…</td><td><code>http_calls</code></td><td class="wrap">Constant URL prefix → host → <code>ext:&lt;host&gt;</code>, plus path. Verb from the method name (or <code>HttpMethod.X</code> in <code>exchange</code>). Body and response types from the argument positions each method uses.</td></tr>
+      <tr><td>WebClient <code>create / baseUrl / uri</code></td><td><code>http_calls</code></td><td class="wrap">Constant URL containing <code>://</code>.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h4>Step B: plain-Java clients (calls not already explained by step A, on non-repo types)</h4>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Code pattern</th><th>Becomes</th><th>Details</th></tr></thead>
+    <tbody>
+      <tr><td><code>new ProducerRecord(topic, …)</code></td><td><code>publishes</code></td><td class="wrap">Topic names from value tracing (or the config fallback). Payload = type of the value argument (position depends on the constructor overload).</td></tr>
+      <tr><td><code>*Consumer.subscribe / assign</code></td><td><code>consumes</code></td><td class="wrap"><code>Pattern.compile("x")</code> is unwrapped. Payload = the in-repo type the consumer decodes records into (below), else the consumer's value type argument.</td></tr>
+      <tr><td>Redis client call</td><td class="wrap"><code>reads</code> / <code>writes</code> / <code>publishes</code> / <code>consumes</code></td><td class="wrap">A client is a receiver typed Jedis, JedisPooled, Pipeline, RedisCommands, StringRedisTemplate, ValueOperations… <em>or</em> a variable whose name contains "jedis"/"redis", <em>or</em> <code>template.opsForX()</code>. Command lists decide the kind (<code>set, hset, incr, lpush, del…</code> write; <code>get, hgetAll, exists, zrange…</code> read; <code>publish</code>/<code>xadd</code> publish; <code>subscribe</code> consumes). The key (traced) becomes a key-pattern "table" in <code>db:redis/&lt;host&gt;</code> with its Redis type (hash, set, sorted set, list, stream, string) taken from the command. Channels become topics.</td></tr>
+      <tr><td>JDBC / JdbcTemplate / JPA native: <code>prepareStatement, executeQuery, executeUpdate, execute, addBatch, query, queryForObject, update, batchUpdate, createNativeQuery…</code> with an argument</td><td class="wrap"><code>reads</code> / <code>writes</code></td><td class="wrap">The SQL text is traced (all variants), then read by <a href="#j-sql">the SQL reader</a>. Each table becomes a table node with the columns the SQL names. Unknown tables fall back to the database node. If some variants name real tables, variants whose tables are all unknown are dropped as less-resolved copies.</td></tr>
+      <tr><td><code>ServerBootstrap.bind(port)</code> (Netty)</td><td>endpoint <code>TCP :port</code></td><td class="wrap">Port traced. Handlers: walks the class doing the bind, and the <code>ChannelInitializer</code> classes it adds (up to 10), for in-repo handlers passed to <code>addLast/addFirst/childHandler/handler</code>. Their <code>channelRead0/channelRead/messageReceived</code> gets a <code>handles</code> edge. The message type is that method's second parameter.</td></tr>
+      <tr><td><code>HttpServer.createContext(path, handler)</code> (JDK)</td><td>endpoint <code>ANY /path</code></td><td class="wrap">Handler = <code>handle()</code> of an in-repo class, a method reference, or the task lambda from 3.7.</td></tr>
+      <tr><td><code>new Socket(host, port)</code>, <code>SocketFactory.createSocket</code>, <code>socket.connect(new InetSocketAddress(h, p))</code></td><td><code>connects_to</code></td><td class="wrap">Collected, then linked after all files: if the port is a number and some TCP server in the repo listens on it, the edge goes to that endpoint. Otherwise to <code>ext:tcp:&lt;host&gt;:&lt;port&gt;</code>. A host known only at run time is named after what supplies it: <code>cfg.getTtHost()</code> → <code>ttHost</code>.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h4>Who gets credited with the I/O</h4>
+  <p>Value tracing can return a value together with the <em>call site</em> where it was supplied. The rule:</p>
+  <ul>
+    <li>If the value came <strong>through a parameter</strong>, the edge starts at the caller that supplied it, and <code>attrs.via</code> names the method that did the I/O. A generic <code>KafkaWriter.send(topic, msg)</code> called by <code>OrderService</code> with <code>"orders"</code> shows as <em>OrderService publishes orders, via KafkaWriter.send</em>. That's the useful reading.</li>
+    <li>If the value came <strong>through a field</strong>, the call site is dropped. A value stored in a field was configured earlier (typically at startup), so the startup code didn't do the I/O. The method doing the I/O keeps the edge.</li>
+    <li>Otherwise the method containing the I/O call gets the edge.</li>
+  </ul>
+
+  <h4>What a consumer decodes into</h4>
+  <p>Inside the consuming method, or else the wrapper class around the consumer, look for a call that takes <code>record.value()</code> as an argument:</p>
+  <ul>
+    <li>a <code>Foo.class</code> argument (<code>mapper.readValue(record.value(), Trade.class)</code>) → <code>Trade</code></li>
+    <li>an in-repo method whose return type is an in-repo type (<code>Trade.parse(record.value())</code>) → that type</li>
+    <li>a library decoder <code>parseFrom, parse, decode, fromBytes, deserialize, readFrom, parseDelimitedFrom</code> on a capitalised type (protobuf) → that type name</li>
+  </ul>
+
+  <h4>Marking the call for control flow</h4>
+  <p>Every expression that caused an effect is noted, so when the control flow is built (3.14) that line shows as "INSERT trade_book" or "send orders" instead of an anonymous library call.</p>
+
+  <!-- ------------------------------------------------ 3.10 -->
+  <h3 id="j-values"><span class="sub">3.10</span>Value tracing: what string can this be?</h3>
+  <p>Plain Java builds names at run time: <code>"INSERT INTO " + tableName</code>, <code>props.getProperty("topic.trades")</code>. <code>Values</code> works out every string an expression can take, without running anything. Each result is a value text plus, optionally, the call site that supplied it.</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Expression</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td>String / text block / int / long literal</td><td class="wrap">That value.</td></tr>
+      <tr><td><code>static final</code> constant</td><td class="wrap">Its initializer (constants of constants too, up to 6 deep).</td></tr>
+      <tr><td><code>a + b</code></td><td class="wrap">Every combination of a's values and b's values. A part with no value becomes <code>*</code>.</td></tr>
+      <tr><td><code>c ? a : b</code></td><td class="wrap">Both branches. An unresolvable branch still contributes <code>*</code> (it can happen at run time).</td></tr>
+      <tr><td>Config lookup: <code>getProperty, getString, getOrDefault, get, getValue, getenv, getInt, getLong, getBoolean…</code> with a constant key</td><td class="wrap">The value from the module's config map (3.1). If missing or a <code>${…}</code> placeholder, the default argument. (<code>get</code> needs a dotted key, so it doesn't fire on ordinary map lookups.)</td></tr>
+      <tr><td>Local variable</td><td class="wrap">Its initializer and every assignment to it in the method.</td></tr>
+      <tr><td>Parameter</td><td class="wrap"><strong>Every call site</strong> of the method (from 3.8): the argument passed at that position. The call site is remembered.</td></tr>
+      <tr><td>Field (<code>x</code> or <code>this.x</code>)</td><td class="wrap">Its initializer and every assignment in the class. Call sites dropped (see crediting rule).</td></tr>
+      <tr><td>Call to an in-repo method</td><td class="wrap">Every <code>return</code> expression of that method. Inside it, parameters are bound to <em>this</em> call's arguments only, so helpers like <code>prop(key, default)</code> resolve per call.</td></tr>
+      <tr><td>Record accessor <code>cfg.port()</code></td><td class="wrap">The matching argument of every <code>new Cfg(…)</code> in the repo.</td></tr>
+      <tr><td><code>list.get(i)</code>, <code>queue.poll()</code>, <code>map.get(k)</code>…</td><td class="wrap">Whatever was <code>add</code>/<code>put</code>/<code>offer</code>/<code>push</code>ed into that local or field collection.</td></tr>
+      <tr><td><code>s.split(",")</code></td><td class="wrap">Each piece, trimmed.</td></tr>
+      <tr><td><code>Integer.parseInt(x)</code>, <code>valueOf</code>, <code>List.of</code>, <code>singletonList</code>, <code>requireNonNull</code>, <code>ofNullable</code>…</td><td class="wrap">Passes its argument through.</td></tr>
+      <tr><td><code>x.trim()</code>, <code>toLowerCase</code>, <code>toString</code>, <code>orElseThrow</code>, <code>get</code>…</td><td class="wrap">Passes the receiver through. <code>opt.orElse(d)</code> gives both.</td></tr>
+      <tr><td>Unknown one-argument helper <code>sanitize(t)</code></td><td class="wrap">Assumed to pass its argument through.</td></tr>
+    </tbody>
+  </table></div>
+  <p><strong>Bounds:</strong> at most 16 values per expression and 10 steps deep; an expression already being evaluated is skipped (no infinite loops on recursion). Results are de-duplicated by text and site.</p>
+  <p><strong>Two views of the result:</strong> <code>known()</code> keeps only values with no <code>*</code> (used for topics, ports, paths). <code>of()</code> keeps partial ones like <code>position:*:*</code> (used for SQL and Redis keys, where a pattern is still informative).</p>
+  <p><strong>Choosing the best pattern:</strong> for Redis keys, <code>representative()</code> drops a value when another one from the same site covers it and is at least as specific. <code>position::</code> (a helper's empty default) gives way to <code>position:*:*</code>, and <code>*:*:*</code> gives way to it too.</p>
+  <p><strong>Topic fallback:</strong> when no topic name can be traced (the code picks it from a map filled at run time, say), every config value under a key matching <code>topic / topics / destination / channel</code> is used instead. Those edges carry <code>inferred: config</code> and the <code>configKeys</code> they came from, so the UI can tell guesses from traced facts.</p>
+
+  <!-- ------------------------------------------------ 3.11 -->
+  <h3 id="j-sql"><span class="sub">3.11</span>Reading SQL text</h3>
+  <p><code>Sql.read</code> isn't a full SQL parser. It reads just enough to say which tables a statement reads and writes, and which columns it names. Rules, in order:</p>
+  <ol>
+    <li>The statement must start (after comments) with SELECT, WITH, INSERT, UPDATE, DELETE, MERGE, UPSERT, REPLACE, TRUNCATE, CALL, EXEC or COPY. Otherwise it's not SQL.</li>
+    <li>Quoted string literals are blanked, so <code>'FROM x'</code> inside a value is ignored.</li>
+    <li><strong>Writes:</strong> <code>INSERT/UPSERT/REPLACE [IGNORE] INTO t (cols)</code>, <code>UPDATE [ONLY] t</code>, <code>DELETE FROM t</code>, <code>MERGE INTO t</code>, <code>TRUNCATE [TABLE] t</code>, <code>COPY t (cols) FROM</code>.</li>
+    <li><strong>Reads:</strong> every table after <code>FROM</code>, <code>JOIN</code> or <code>USING</code>, except pseudo-tables (<code>select, lateral, unnest, values, dual, generate_series</code>).</li>
+    <li>For UPDATE and DELETE, the target is removed from reads (<code>UPDATE t … FROM other</code> writes t and reads other).</li>
+    <li><strong>Columns:</strong> the INSERT/COPY column list, or a SELECT list (aliases win; <code>*</code> and bare expressions are ignored).</li>
+    <li>Identifiers may be quoted or schema-qualified; a schema that is <code>*</code> (unresolved) is dropped. A table that is <code>*</code> stays "unknown", and the caller attaches the edge to the database instead.</li>
+  </ol>
+
+  <!-- ------------------------------------------------ 3.12 -->
+  <h3 id="j-entry"><span class="sub">3.12</span>Entry points and work started on other threads</h3>
+  <h4>Entry points (<code>attrs.entryPoint</code>)</h4>
+  <ul>
+    <li><code>main</code>: a <code>main</code> the <code>java</code> launcher would run (JLS 12.1.4): void, not private, <code>String[]</code> / <code>String...</code> or no arguments (the array form wins), static or an instance method on a class the launcher can construct. A main inherited from a superclass counts when the build names the subclass. A main no jar starts still has the mark, with <code>packaged: false</code>.</li>
+    <li><code>scheduled</code>: <code>@Scheduled</code> (its annotation text kept as <code>schedule</code>), or the task handed to <code>schedule*</code> (method reference, task lambda, or <code>new X()</code> with <code>run/call</code>). The schedule text records the call's other arguments, e.g. <code>scheduleAtFixedRate(0, interval, MILLISECONDS)</code>.</li>
+    <li><code>thread</code>: <code>run()</code> or <code>call()</code> with no parameters in a class that is a Thread, Runnable, Callable or TimerTask, directly or through in-repo supertypes (up to 4 levels).</li>
+  </ul>
+  <p>HTTP and socket handlers and message consumers are not marked here. They are recognised from their <code>handles</code> and <code>consumes</code> edges.</p>
+  <h4>Async edges (<code>calls</code> with <code>attrs.async</code>)</h4>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Code</th><th>async</th><th>Task resolved to</th></tr></thead>
+    <tbody>
+      <tr><td><code>worker.start()</code></td><td>thread</td><td class="wrap">the receiver's class</td></tr>
+      <tr><td><code>new Thread(task)</code></td><td>thread</td><td class="wrap">task argument (<code>shutdown</code> if the Thread is passed to <code>addShutdownHook</code>)</td></tr>
+      <tr><td><code>schedule*(task, …)</code></td><td>scheduled</td><td class="wrap">first argument</td></tr>
+      <tr><td><code>submit, execute, runAsync, supplyAsync, invokeAll</code></td><td>executor</td><td class="wrap">first argument</td></tr>
+    </tbody>
+  </table></div>
+  <p>A task expression resolves to: a method reference's method; a task lambda's node; or, for <code>new X()</code> or a variable/field of type X, X's <code>run()</code>/<code>call()</code> with a body, searching in-repo superclasses up to 5 levels (only if X is a Thread/Runnable/Callable/TimerTask). The edge keeps the guards, so "starts TradeConsumer only if batching is off" is preserved.</p>
+  <div class="why"><span class="tag">Why mark them</span><p>Views that follow a request (Flow, Sequence, Data flow per endpoint) must not follow these edges. The request doesn't wait for a background thread. The Program view does follow them, because it shows everything a program starts.</p></div>
+  <h4>Servers opened (<code>attrs.openedBy</code>)</h4>
+  <p>For each Netty or JDK HTTP server endpoint: the method that calls <code>bind</code>/<code>createContext</code>, plus the method where the port or path value came from. That's how the program view knows <code>main</code> opens "TCP :9000" even when the bind happens two calls down.</p>
+
+  <!-- ------------------------------------------------ 3.13 -->
+  <h3 id="j-config"><span class="sub">3.13</span>Config and environment reads</h3>
+  <ul>
+    <li><code>System.getenv("NAME")</code> → <code>NAME</code> added to the method's <code>envReads</code>.</li>
+    <li><code>getProperty / getString / getOrDefault / getInt / getLong / getBoolean / getValue / getRequiredProperty / get</code> with a constant key <em>that exists in the module's config</em> → <code>configReads</code> <code>{key, file}</code>. When several files define the key, the file the class mentions by name (<code>"processor.properties"</code>) is chosen.</li>
+  </ul>
+
+  <!-- ------------------------------------------------ 3.14 -->
+  <h3 id="j-cf"><span class="sub">3.14</span>Control flow and variables</h3>
+  <p>Last, every method, constructor and task lambda body is turned into a list of steps. This is the "inside" of a function; the Activity, Sequence and Program views draw it.</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Step <code>k</code></th><th>From</th><th>Holds</th></tr></thead>
+    <tbody>
+      <tr><td><code>do</code></td><td class="wrap">consecutive simple statements (expressions, declarations, <code>super(…)</code>), merged into one action</td><td class="wrap"><code>items</code>: text, line, calls</td></tr>
+      <tr><td><code>if</code></td><td class="wrap">if / else</td><td class="wrap"><code>cond</code>, calls in the condition, <code>then</code>, <code>else</code></td></tr>
+      <tr><td><code>switch</code></td><td class="wrap">switch statement or expression</td><td class="wrap"><code>on</code>, <code>cases</code> (label, body)</td></tr>
+      <tr><td><code>loop</code></td><td class="wrap">for-each, for, while, do</td><td class="wrap"><code>kind</code>, <code>text</code> ("for each t in trades"), <code>body</code></td></tr>
+      <tr><td><code>try</code></td><td class="wrap">try / catch / finally</td><td class="wrap"><code>resources</code> and their calls, <code>body</code>, <code>catches</code> (type, body), <code>finally</code></td></tr>
+      <tr><td><code>return</code>, <code>throw</code></td><td class="wrap">return / throw</td><td class="wrap">text, calls</td></tr>
+      <tr><td><code>jump</code>, <code>sync</code>, <code>block</code></td><td class="wrap">break/continue, synchronized, nested <code>{}</code></td><td class="wrap">text / body</td></tr>
+    </tbody>
+  </table></div>
+  <p><strong>Calls inside each step</strong> come from the resolution tables of passes 8–12, so a call already knows whether it is <code>calls</code> (in-repo method), <code>reads</code>/<code>writes</code>/<code>publishes</code>/<code>consumes</code>/<code>http_calls</code>/<code>connects_to</code> (with its target node), or an async start. They are listed in evaluation order (arguments before the call that uses them). A call guarded <em>within</em> the statement (by a ternary, <code>&amp;&amp;</code>, or a lambda) gets a <code>when</code>. Calls inside a task lambda are left out of the enclosing method; they belong to the lambda's own control flow.</p>
+  <p><strong>Size cap:</strong> past 400 statements a method is cut to its first 20 steps plus "… (method too large to chart)", so generated code can't bloat the graph.</p>
+  <p><strong>Variables:</strong> each parameter, local, captured variable (from an enclosing function), field and static is listed with its scope, type, declaring class, first line, read and write counts, and <code>final</code>. Writes count assignments, <code>++</code>/<code>--</code> and calls of mutating methods on it (<code>add, put, remove, clear, compute, incrementAndGet, append, sort…</code>). Up to 60 variables per method.</p>
+
+  <!-- ------------------------------------------------ 3.15 -->
+  <h3 id="j-build"><span class="sub">3.15</span>Building the document</h3>
+  <p>Throughout all passes the builder keeps <strong>one node per ID</strong> (re-declaring returns the existing node) and <strong>one edge per (source, target, kind)</strong>. A second occurrence adds its line to <code>locations</code> (up to 20) and its guard chain to <code>conditions</code>. At the end, edges to unknown nodes and self-edges are dropped, and parents pointing at unknown nodes are cleared. The document is written as JSON with the source block: repo, commit, branch, analyzer name and version, generation time.</p>
+</section>
+
+<!-- ================================================================== -->
+<section class="stage" id="trace">
+  <div class="eyebrow">Worked trace · demo/ledger</div>
+  <h2>Two facts, followed from code to graph</h2>
+  <p>The Java rules above, applied to two questions about the demo ledger processor.</p>
+
+  <h3>"Which table does TradeWriter write to?"</h3>
+  <pre><span class="c">// ProcessorMain.main</span>
+TradeWriter writer = <span class="k">new</span> TradeWriter(dataSource, config.getProperty(<span class="k">"db.trades.table"</span>));
+
+<span class="c">// TradeWriter</span>
+<span class="k">public</span> TradeWriter(DataSource dataSource, String tableName) {
+    <span class="k">this</span>.tableName = tableName == <span class="k">null</span> || tableName.isBlank() ? <span class="k">"trade_book"</span> : tableName;
+}
+<span class="k">public void</span> insert(List&lt;Trade&gt; trades) {
+    String sql = <span class="k">"INSERT INTO "</span> + tableName
+        + <span class="k">" (trade_id, account_id, account_email, symbol, quantity, price) VALUES (?, ?, ?, ?, ?, ?)"</span>
+        + <span class="k">" ON CONFLICT (trade_id) DO NOTHING"</span>;
+    <span class="k">try</span> (Connection conn = dataSource.getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) { … }
+}</pre>
+  <ol class="trace">
+    <li><b>Spot it (3.9 B).</b> <code>conn.prepareStatement(sql)</code>: the name is on the JDBC list, the receiver type <code>Connection</code> isn't in the repo, there's an argument. Run <code>jdbc()</code>.</li>
+    <li><b>Trace <code>sql</code> (3.10).</b> A local → its initializer → a <code>+</code> chain: combine the parts.</li>
+    <li><b>Trace <code>tableName</code>.</b> Not a local or parameter of <code>insert</code>, so a field. No initializer. One assignment in the class, a ternary: the then branch gives <code>"trade_book"</code>; the else branch is <code>tableName</code>, which <em>inside the constructor</em> is a parameter.</li>
+    <li><b>Walk call sites.</b> Call sites of the constructor (from 3.8): <code>new TradeWriter(dataSource, config.getProperty("db.trades.table"))</code>. Argument 2 is a config lookup with a constant key. The module config (3.1) has <code>db.trades.table=trade_book</code>.</li>
+    <li><b>Credit.</b> The value reached <code>insert</code> through a field, so the call site in <code>main</code> is dropped. The edge belongs to <code>TradeWriter.insert</code>; main only configured the writer.</li>
+    <li><b>Read the SQL (3.11).</b> Both variants are the same text: <code>INSERT INTO trade_book (trade_id, …) …</code>. Verb INSERT; writes <code>trade_book</code>; columns trade_id, account_id, account_email, symbol, quantity, price. No FROM, so no reads.</li>
+    <li><b>Name the nodes.</b> Database from <code>db.url</code>: <code>db:ledger-db/ledger</code> (postgresql). Table <code>table:ledger-db/ledger.trade_book</code>. No entity declares it, so the SQL columns are merged into its <code>columns</code>.</li>
+    <li><b>Emit.</b> <code>TradeWriter.insert —writes→ trade_book</code>, operations [INSERT], payload <code>{type: "trade_book row", fields: […]}</code>, location = the <code>prepareStatement</code> line, unconditional (a try resource isn't a guard). <code>truncate()</code> separately yields a TRUNCATE write.</li>
+    <li><b>Mark the line (3.9).</b> In <code>insert</code>'s control flow, the try step's resource call reads "INSERT trade_book".</li>
+    <li><b>In the browser (8).</b> The column name <code>account_email</code> matches the email rule, so every flow into this table is flagged as carrying personal data.</li>
+  </ol>
+
+  <h3>"Which topic does TradeConsumer read, and who starts it?"</h3>
+  <pre><span class="c">// TradeConsumer implements Runnable</span>
+<span class="k">private static final</span> String TOPIC = <span class="k">"trades"</span>;
+<span class="k">public void</span> run() {
+    <span class="k">try</span> (TopicReader reader = <span class="k">new</span> TopicReader(kafka, TOPIC)) {
+        <span class="k">while</span> (!Thread.currentThread().isInterrupted()) {
+            <span class="k">for</span> (ConsumerRecord&lt;String, <span class="k">byte</span>[]&gt; record : reader.poll()) {
+                Trade trade = Trade.parse(record.value());
+                book.apply(trade);
+                writer.insert(List.of(trade));
+            } … } } }
+
+<span class="c">// TopicReader(Properties props, String topic)</span>
+<span class="k">this</span>.consumer.subscribe(Collections.singletonList(topic));
+
+<span class="c">// ProcessorMain.main</span>
+<span class="k">if</span> (Boolean.parseBoolean(config.getProperty(<span class="k">"batching"</span>, <span class="k">"true"</span>))) { <span class="k">new</span> TradeConsumerThread(kafka, book, writer).start(); }
+<span class="k">else</span> { <span class="k">new</span> Thread(<span class="k">new</span> TradeConsumer(kafka, book, writer), <span class="k">"trade-consumer"</span>).start(); }</pre>
+  <ol class="trace">
+    <li><b>Spot it (3.9 B).</b> <code>consumer.subscribe(…)</code>: the receiver is the field <code>consumer</code>, declared <code>KafkaConsumer</code>, whose name ends in "Consumer" and isn't in the repo. Run <code>kafkaSubscribe()</code>.</li>
+    <li><b>Trace the topic.</b> <code>singletonList</code> passes its argument through → <code>topic</code>, a parameter of the <code>TopicReader</code> constructor → its call sites → <code>new TopicReader(kafka, TOPIC)</code> in <code>TradeConsumer.run</code> → <code>TOPIC</code> is a constant <code>"trades"</code>. The value remembers that call site.</li>
+    <li><b>Credit.</b> It came through a parameter, so the edge starts at the supplier: <code>TradeConsumer.run —consumes→ topic:trades</code>, <code>via: TopicReader constructor</code>. <code>TradeConsumerThread</code>'s own <code>new TopicReader</code> gets its own edge the same way.</li>
+    <li><b>Payload.</b> Inside <code>run</code>, <code>Trade.parse(record.value())</code> takes the record value and resolves to an in-repo method returning <code>Trade</code>, so the payload is <code>Trade</code>, linked to its class.</li>
+    <li><b>Entry point (3.12).</b> <code>TradeConsumer</code> implements <code>Runnable</code> and <code>run()</code> has no parameters, so it's <code>entryPoint: thread</code>.</li>
+    <li><b>Who starts it.</b> <code>new Thread(new TradeConsumer(…))</code> in <code>main</code> → the task is an in-repo Runnable → <code>main —calls(async: thread)→ TradeConsumer.run</code>, with condition <code>if not (Boolean.parseBoolean(config.getProperty("batching", "true")))</code>. (The trailing <code>.start()</code> is on a JDK <code>Thread</code>, so it adds nothing.)</li>
+    <li><b>In the browser (8).</b> The Program view starts at <code>main</code>, follows that async edge, and draws a part "Consume trades · …" (a thread, <code>TradeConsumer.run</code>) started by start-up "when not batching". Topic <code>trades</code> appears in the Data in lane. The digest of <code>run</code> reads: loop while not interrupted → loop for each record → <code>Trade.parse</code> → <code>PositionBook.apply</code> → <code>TradeWriter.insert</code> → INSERT trade_book.</li>
+  </ol>
+</section>
+
+<!-- ================================================================== -->
+<section class="stage" id="ts">
+  <div class="eyebrow"><span class="num">Stage 4</span> analyzers/typescript</div>
+  <h2>TypeScript / JavaScript analyzer</h2>
+  <p>Same output shape, built on ts-morph (the TypeScript compiler API). The control-flow steps and SQL reader are ports of the Java ones, so both languages render identically. Differences worth knowing:</p>
+  <h4>Packages, not build modules</h4>
+  <p>Each directory with a <code>package.json</code> and sources is a package. It is a <strong>service</strong> if it depends on a server or worker library: express, @nestjs/core, fastify, koa, @hapi/hapi, next, hono, kafkajs, amqplib, ws, socket.io, node-cron, cron, bullmq, bull. Each package gets its own compiler project (its tsconfig if present, JS allowed, decorators on), excluding nested packages.</p>
+  <h4>Order of passes per package</h4>
+  <ol class="passes">
+    <li>Prisma schema → tables (models, fields, relations, datasource provider)</li>
+    <li>Declare files, directories, functions, classes, methods</li>
+    <li>TypeORM <code>@Entity</code> classes → tables and columns</li>
+    <li>Express router mounts (<code>app.use("/api", router)</code>) → route prefixes</li>
+    <li>Entry modules: files that run code at top level and are <em>not imported</em> by another file, or are named by <code>package.json</code> main/bin → a "(module)" function with <code>entryPoint: main</code></li>
+    <li>Scheduled and threads: <code>setInterval</code> (every N ms), <code>cron.schedule</code>/<code>scheduleJob</code>, <code>new CronJob</code>, Nest <code>@Cron/@Interval/@Timeout</code>; <code>new Worker("./w.js")</code> marks that file as a worker-thread entry</li>
+    <li>Per file: imports/inheritance, routes (Express verbs on routers and apps, NestJS <code>@Controller</code> + <code>@Get/@Post…</code>), calls and I/O</li>
+    <li>Control flow, variables and doc comments for every declared function</li>
+  </ol>
+  <h4>Calls and I/O</h4>
+  <ul>
+    <li>Call targets come from the compiler's declaration lookup. <code>new X()</code> links to X's constructor.</li>
+    <li>HTTP: <code>fetch(url, {method, body})</code>, <code>axios.get/post…</code>, <code>axios({url, method, data})</code>, <code>got</code>.</li>
+    <li>Kafka (kafkajs): <code>producer.send({topic})</code>, <code>consumer.subscribe({topic | topics})</code>.</li>
+    <li>SQL: <code>query, execute, exec, run, all, get, prepare, many, one, none, any…</code> with SQL text, plus tagged templates <code>sql`SELECT …`</code> (postgres.js, slonik).</li>
+    <li>Redis (ioredis, node-redis), RabbitMQ (amqplib <code>sendToQueue/publish/consume</code> on a channel), Prisma (<code>prisma.model.op()</code>), TypeORM repositories (<code>Repository&lt;Entity&gt;</code> receivers).</li>
+    <li>Inbound sockets: <code>net/tls/http.createServer(handler).listen(port)</code>, <code>ws</code> <code>WebSocketServer({port})</code> with <code>on("connection")</code>.</li>
+  </ul>
+  <div class="limit"><span class="tag">Limit</span><p>Value resolution is simpler than Java's: constants, template literals (substitutions become <code>*</code>), <code>a ?? "default"</code>, <code>+</code> chains, and variable or enum initializers. It does <strong>not</strong> walk back through callers' arguments or return values, so names passed in as parameters stay unresolved.</p></div>
+</section>
+
+<!-- ================================================================== -->
+<section class="stage" id="infra">
+  <div class="eyebrow"><span class="num">Stage 5</span> analyzers/infra</div>
+  <h2>Infra analyzer</h2>
+  <p>Reads YAML and JSON files under 5 MB (skipping the usual build directories) and recognises three kinds of document.</p>
+  <h4>docker-compose files</h4>
+  <ul>
+    <li>Each service → <code>container</code> node <code>ctr:&lt;name&gt;</code> with image, a <code>role</code> matched from the image name (database, cache, broker, proxy, search, observability), <code>buildContext</code> (resolved relative to the compose file), ports.</li>
+    <li>What it starts: the service's <code>command</code> / <code>entrypoint</code>, else the <code>ENTRYPOINT</code> / <code>CMD</code> of the last stage of the Dockerfile it is built from (<code>build.dockerfile</code>, default <code>Dockerfile</code>; recorded as <code>dockerfile</code>), plus the jar files that stage <code>COPY</code>s in. From these: <code>jars</code> (file names, possibly a glob such as <code>producer-*.jar</code>) and <code>mainClasses</code> (plain dotted arguments; option values like <code>-Dkey=a.b</code> are skipped). Nothing else from the Dockerfile is kept, since ENV and ARG values can hold credentials.</li>
+    <li>Environment: a telemetry service-name variable becomes <code>serviceName</code>. Only the <em>keys</em> of other variables are kept; values often hold credentials.</li>
+    <li><code>connects_to</code> edges from <code>depends_on</code>, <code>links</code>, and any environment value that mentions another service's hostname (a URL or a broker list), recording which variable.</li>
+  </ul>
+  <h4>Kubernetes manifests</h4>
+  <ul>
+    <li>Workloads (Deployment, StatefulSet, DaemonSet, ReplicaSet, Job, CronJob) → deployment nodes <code>k8s:&lt;namespace&gt;/&lt;name&gt;</code> with their pod labels, and <code>jars</code> / <code>mainClasses</code> from each container's <code>command</code> and <code>args</code>.</li>
+    <li>After all files: each Service whose selector matches a workload's labels (same namespace) gives that workload <code>hostnames</code>: <code>svc</code>, <code>svc.ns</code>, <code>svc.ns.svc.cluster.local</code>. Those are the names other code uses to call it.</li>
+    <li>Each Ingress → an external node for its host, <code>connects_to</code> the workloads behind its backend service, with paths.</li>
+  </ul>
+  <h4>OpenAPI / Swagger specs</h4>
+  <p>Each operation → an endpoint with the same ID scheme as the code analyzers. The service is chosen from <code>x-service-name</code>, else a server host that looks like a service name, else the title. A spec and the controller implementing it merge into one node.</p>
+  <h4>.codeatlas.yml</h4>
+  <p>Diagram groups and renames from the repo root are attached to the infra document as <code>config</code> and passed through to the UI unchanged.</p>
+</section>
+
+<!-- ================================================================== -->
+<section class="stage" id="store">
+  <div class="eyebrow"><span class="num">Stage 6</span> core/ir · core/internal/store</div>
+  <h2>Validate and store</h2>
+  <ol class="trace">
+    <li><b>Strict decode.</b> Unknown JSON fields or trailing data are errors, so a wrong analyzer version can't slip half-understood data in.</li>
+    <li><b>Validate.</b> IR version; repo, commit and analyzer present; every node has an ID (unique), a known kind and a name; parents and edge ends exist; no node contains itself; edge kinds known; locations have a file and line numbers ≥ 1 in order. Up to 100 problems are listed in the job log. Any problem rejects the whole document.</li>
+    <li><b>Save in one transaction.</b> Delete any earlier snapshot for the same repo, commit and analyzer (re-analyzing the same commit replaces it). Insert the snapshot row (analyzer, versions, counts, <code>config</code>). Bulk-copy nodes and edges into their tables, with <code>attrs</code>, <code>otel</code> and <code>locations</code> as JSON.</li>
+  </ol>
+  <p>A commit therefore has up to three snapshots: java, typescript and infra. Nothing is merged at write time.</p>
+</section>
+
+<!-- ================================================================== -->
+<section class="stage" id="merge">
+  <div class="eyebrow"><span class="num">Stage 7</span> core/internal/graph</div>
+  <h2>Merge on read</h2>
+  <p>When a tab asks for a repo's graph, the server loads every snapshot of the requested commit (the latest commit if none), ordered so the infra snapshot comes last, and merges them:</p>
+  <ol class="trace">
+    <li><b>Union nodes by ID.</b> For the same ID, the first non-empty value wins for qualified name, parent, language and location; <code>attrs</code> and <code>otel</code> maps are combined, earlier values winning on clashes.</li>
+    <li><b>Union edges by (source, target, kind)</b>, concatenating their locations.</li>
+    <li><b>Link containers to code.</b> A container or deployment <code>deploys</code> a service when its build context equals the service's module path. When that directory builds several programs, it deploys the one whose jar (glob patterns match) or main class its command names, and nothing if none or more than one matches. Otherwise it links when its name, telemetry service name or any of its cluster hostnames equals the service's name. It also <code>deploys</code> a database whose connection host is one of those names.</li>
+    <li><b>Link databases with no known host.</b> When the URL comes from the environment (Prisma's <code>DATABASE_URL</code>, say): if a service's container connects to exactly one database container, and the service uses exactly one still-unlinked database node, they're linked.</li>
+    <li><b>Turn "external" hosts into services.</b> An external node whose host equals a service name, a telemetry service name, or a container's name or hostname is really another service in the repo. Its edges are retargeted (through the container to the service it deploys), and the external node is removed. <code>http://inventory-service/items</code> becomes <em>orders → inventory</em> instead of <em>orders → external</em>.</li>
+    <li><b>Filter</b> by the requested node kinds, if any, keeping only edges between kept nodes.</li>
+  </ol>
+</section>
+
+<!-- ================================================================== -->
+<section class="stage" id="derive">
+  <div class="eyebrow"><span class="num">Stage 8</span> web/src/graph</div>
+  <h2>How flows are built in the browser</h2>
+  <p>The analyzers record local facts: "this method calls that one", "this method writes that table". Flows across many methods are built in the browser from those facts. These are the core rules, leaving out drawing and layout.</p>
+
+  <h4>Lifting to an owner</h4>
+  <p>For each edge, both ends walk up their parent chain to the nearest node of the level being drawn: service, module, database, topic, queue or external for Architecture; package for Components. Edges whose two ends land on the same owner disappear; the rest are merged per pair, keeping the set of underlying kinds. <em>TradeWriter.insert writes trade_book</em> becomes <em>ledger-processor → ledger-db</em>.</p>
+
+  <h4>Programs that share a module</h4>
+  <p>When a module builds several programs, each program is a service with a <code>runs</code> edge to its main and <code>attrs.module</code> pointing at the module that holds the code. Its code is found by walking from that main:</p>
+  <ul>
+    <li><code>calls</code> (async ones included: work it starts on other threads runs in the same process) and <code>handles</code>;</li>
+    <li>every endpoint whose <code>openedBy</code> is reached, and that endpoint's handler;</li>
+    <li>a call to an abstract method reaches the in-repo methods with the same name and parameters in its subtypes;</li>
+    <li>reaching a constructor reaches the class's thread body (<code>run</code> / <code>call</code>), however the object is later started (<code>consumers.forEach(pool::submit)</code>);</li>
+    <li>a Spring Boot main also reaches every endpoint, consumer and scheduled job of its module.</li>
+  </ul>
+  <p>For lifting, a node in such a module belongs to every program that reaches it, so shared code is credited to each of them. A method no program reaches (a framework callback like Netty's <code>channelActive</code>, an overload, a stop hook) belongs to the programs that reach something in its class. Only code in classes no program touches stays with the module, which is drawn only if such code does I/O. Calls between two pieces of the same module are never a link between programs. A program's box says which module it comes from (<em>java · from livepnl</em>).</p>
+
+  <h4>Reachability</h4>
+  <p>Breadth-first search from a start method along <code>calls</code> and <code>handles</code> edges to methods and functions. Async edges are skipped unless the view asks for them. The default cap is 80 methods and depth 10; the Program view uses 150 and 12. Flow drops leaf getters and setters (named get/set/is/has, with no calls or I/O).</p>
+
+  <h4>Entry points of a service</h4>
+  <p>Endpoints inside the service (their start is the <code>handles</code> target; TCP endpoints count as socket), methods with <code>consumes</code> edges (consumers), and methods with <code>attrs.entryPoint</code> (scheduled, thread, main). Sorted in that order.</p>
+
+  <h4>Data flow (DFD)</h4>
+  <ul>
+    <li><strong>Level 2 (one service):</strong> each entry point is a process. Inputs: a client (or calling services, if the service isn't public; "socket client" for TCP) sends the request type and receives the response type; a consumed topic sends its payload type. Then every side-effect edge on methods reachable from the entry: reads (store → process, response types), writes and publishes (process → target, payload types), HTTP and TCP calls (both directions).</li>
+    <li><strong>Folding:</strong> entry points of the same kind whose flows have the identical signature are drawn once as "×N", provided they touch data beyond answering the caller.</li>
+    <li><strong>Level 1 and 0:</strong> processes are services; at level 0 the whole repo is one process and only the outside world remains.</li>
+  </ul>
+
+  <h4>Reading rules (every tab)</h4>
+  <p>Every diagram goes through one pass (<code>web/src/graph/reading.ts</code>) so all tabs read like the Program tab:</p>
+  <ul>
+    <li><b>Direction.</b> Each line points from where data comes from to where it goes. A read is drawn from the store to the reader, a write from the writer to the store; a store both read and written by one box is a single line from the writer with arrowheads at both ends (two opposite lines would be a cycle the layout breaks at random). Consumed topics point at the consumer, requests at the callee. ELK is told how much each line's direction matters (<code>elk.layered.priority.direction</code>): data lines most, calls next, structure (uses, inheritance, deployment, loop-backs) least, so when the layout must break a cycle it turns a structural line, never a data line.</li>
+    <li><b>Lanes</b> (Architecture, Data flow, Components, Explore package level, Flow). A data box only read by the parts goes in <i>Data in</i>; only written, or read and written by the same parts, in <i>Data out</i>; written by one part and read by another, between the parts. Data systems (Kafka, PostgreSQL) are copied per lane so each side keeps its own group.</li>
+    <li><b>Names.</b> Services get rows for the requests they take (TCP / HTTP endpoints) and what their code does with data; packages and classes a row from their code's effects (and a class its doc comment); functions are named by their doc comment's first sentence, else their own I/O, with <code>Class.method</code> underneath; level-2 data-flow processes by what their work does; tables say which programs write and read them; containers which program they run.</li>
+    <li><b>Typed lines.</b> Every line carries the types moving along it: payloads of writes, publishes and HTTP calls, what a read returns, a consumed topic's payload, the argument types of a call, an endpoint's request. The verb (reads, publishes, POST /x, a call's condition) is the second label line.</li>
+    <li><b>Order.</b> Parts are numbered by their longest path from where data starts (ignoring lines that close a cycle); a part nothing feeds ranks with those its sources feed.</li>
+    <li><b>Folding.</b> A data group with more than four members starts folded into one box (<code>VGroup.fold</code>).</li>
+    <li><b>Outline.</b> The parts in order, each with what comes in and goes out (three or more same-typed links into one system read as one line: "byte[] → Kafka (8): live-prices, prices, fills +5"), and its rows. The Sequence tab lists participants with the messages they receive and send.</li>
+  </ul>
+
+  <h4>Program (one program read as one file)</h4>
+  <ol>
+    <li>Pick a program: each service with a <code>runs</code> edge, then mains no build packages. Its root is the main it runs.</li>
+    <li><b>Parts.</b> Start-up (the main). Each async edge leaving a part's reach starts a part (thread, scheduled job, executor task, shutdown hook). Creating an object whose class has a thread body (<code>run</code>/<code>call</code>) starts that body as a part too (<code>consumers.forEach(pool::submit)</code> has no call edge). Each endpoint whose <code>openedBy</code> is reached is a server part; several ports served by one handler are one part. A Spring Boot main adds every entry point of its service.</li>
+    <li><b>Whose code.</b> A part owns its reach plus every method of its own thread class (a consumer that subscribes in its constructor), and never the methods of another part's thread class. Its data in and data out come from the code it owns.</li>
+    <li><b>Names.</b> A part is named by what it does. Start-up adds its main effects. A server part is "Receive &lt;request type&gt;" (or "Serve &lt;route&gt;"). A thread class leads with its own name unless the name is generic (Worker, Task, Main…), then its effects ("Price engine · read price-derivation:matrix"). Effects read "consume …", "publish to Kafka (8 topics)", "write …", "call …", "read …" (a store it also writes is not repeated). Underneath: the kind of work and <code>Class.method</code>. The doc comment's first sentence, or the starting method's for a lambda, is the first line in the box.</li>
+    <li><b>Between parts.</b> A started lambda carries what it captures (<code>attrs.variables</code>, scope <code>captured</code>): "transcode: int, sid: int, payload: byte[] · starts · via KafkaManager.submit". A queue links the part that puts into it (<code>put</code>, <code>offer</code>, <code>add</code>…) to the part that takes from it (<code>take</code>, <code>poll</code>, <code>drainTo</code>…), matched by element type because the two ends usually keep the queue in fields of different classes. Shared state (a map, list or atomic field) set by one part and read by another is a dashed line. A start that hands nothing on is a thin "starts" / "opens :5001" line.</li>
+    <li><b>Order.</b> Parts are numbered in the order data moves: start-up first, then each part after every part that feeds it; shutdown hooks last.</li>
+    <li><b>Data in / out.</b> The Data in lane collects the reads, consumes, inbound requests, config files and environment variables of each part's code; Data out collects writes, publishes, responses and outgoing calls. A data system with more than four members (eight Kafka topics) starts folded into one box.</li>
+    <li><b>Outline.</b> The same parts as text beside the diagram: how the program is started (<code>java -jar producer-1.0.jar (maven-shade, pom.xml)</code>), its entry point, then each part with started by / in / out / starts and its steps.</li>
+  </ol>
+  <p><strong>The digest inside each box</strong> walks the method's control flow: <code>?</code> for if/switch/case, <code>↻</code> loops, <code>!</code> catch, <code>✕</code> throw, <code>⇉</code> starting other work, <code>→</code> calls, and an I/O mark for reads and writes. A called method is opened inline (up to 2 levels) only if it decides something (has if/switch/loop/try) or reaches I/O within 4 calls; otherwise it's shown muted. Plain lines are kept only if they are <em>calculations</em>: an assignment with a compound operator (<code>total += x</code>), or one whose right side has arithmetic (<code>pnl = (mid - avg) * qty</code>), excluding strings and <code>new</code>.</p>
+
+  <h4>Flow, Activity, Sequence</h4>
+  <p>Flow is reachability from an endpoint's handler, drawn with conditional (dashed) edges. Activity draws one method's <code>controlFlow</code> steps directly. Sequence walks <code>controlFlow</code> in order, 3 calls deep: a lifeline per class, store, topic or remote service; if/loop/try become alt/opt/loop fragments. An HTTP call to another service of the repo continues into the handler whose route matches the path.</p>
+
+  <h4>Sensitive data</h4>
+  <p>Field and column names are lower-cased, stripped of punctuation, and tested against ordered rules; the first match wins (so <code>cardToken</code> is payment, not credential): payment, credential, government-id, email, phone, person-name (a bare <code>name</code> counts only on person-like owners such as Customer or User), address, birth-date, location, ip-address, financial. Nested in-repo types are followed 2 levels, so <code>Order.customer.email</code> is found.</p>
+
+  <h4>Roles (for grouping)</h4>
+  <p>A class's role comes from its stereotype, then its name suffix, then its edges: controllers and handled methods are Ingress; listeners and consumers, Messaging; entities, records and enums, Model; <code>*Config</code>/<code>*Application</code>, Config; repositories and DAOs, Persistence; Feign and <code>*Client</code> with HTTP calls, Integration; classes with only accessors, Model; anything else, Domain. A package takes its members' most common role.</p>
+</section>
+
+<!-- ================================================================== -->
+<section class="stage" id="limits">
+  <div class="eyebrow">Read before trusting a diagram</div>
+  <h2>What it cannot see</h2>
+  <p>Each limit below follows directly from the rules above. Knowing them explains most "why is this arrow missing" questions.</p>
+  <div class="limit"><span class="tag">Interfaces stop the call tree</span><p>A call through an interface or abstract type resolves to the interface method, which has no body. No implementation is chosen, so reachability stops there. Injected service interfaces are the common case. Spring Data repositories are the exception, because their I/O is recognised at the call site.</p></div>
+  <div class="limit"><span class="tag">Library types are known by name only</span><p>Dependency jars aren't loaded. A client wrapped in your own class is detected only because the wrapper's body uses a known client. A client type with an unfamiliar name isn't detected at all.</p></div>
+  <div class="limit"><span class="tag">Ambiguous overloads</span><p>When the solver fails and a class has two methods with the same name and argument count, no edge is drawn rather than a guessed one.</p></div>
+  <div class="limit"><span class="tag">Values have bounds</span><p>16 variants, 10 steps deep. Unknown parts become <code>*</code>. <code>${…}</code> placeholders aren't expanded. Environment variables have no values at analysis time (only defaults). Topics from the config fallback are marked <code>inferred</code> and may over-attach.</p></div>
+  <div class="limit"><span class="tag">SQL and ORMs</span><p>SQL is read with patterns, not parsed. Stored procedures (CALL/EXEC) name no tables. jOOQ, MyBatis XML, Hibernate HQL and Criteria queries aren't read.</p></div>
+  <div class="limit"><span class="tag">Config scope</span><p>Only <code>src/main/resources</code>, and only the first document of <code>application.yml</code>, so profile-specific values are ignored.</p></div>
+  <div class="limit"><span class="tag">Invisible by nature</span><p>Reflection, dynamic proxies, XML-wired beans, generated sources that aren't committed, and anything decided by data at run time.</p></div>
+  <div class="limit"><span class="tag">Caps</span><p>400 statements per method chart; 20 locations and 10 condition chains per edge; 60 variables per method. Only the default branch head is analyzed (shallow clone, no history).</p></div>
+</section>
+
+<footer>
+  CodeAtlas internals · written from the source of core/, analyzers/ and web/src/graph on 21 October 2026. When a rule here and the code disagree, the code wins.
+</footer>
+</main>
+</div>
